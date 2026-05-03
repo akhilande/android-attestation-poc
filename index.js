@@ -7,10 +7,10 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// In-memory nonce store
+// In-memory nonce store (PoC)
 const nonceStore = new Map();
 
-// Health
+// Health check
 app.get("/", (req, res) => {
     res.send("✅ Backend Running");
 });
@@ -30,7 +30,7 @@ app.post("/verify-attestation", (req, res) => {
         if (!nonce || !certificateChain) {
             return res.status(400).json({
                 success: false,
-                error: "Missing fields"
+                error: "Missing nonce or certificateChain"
             });
         }
 
@@ -60,53 +60,92 @@ app.post("/verify-attestation", (req, res) => {
             });
         }
 
-        // 🔹 Parse extension ASN.1
-       // 🔹 Parse extension correctly
-const extDer = forge.util.createBuffer(ext.value, "binary");
-const outerAsn1 = forge.asn1.fromDer(extDer);
-const innerBytes = outerAsn1.value;
-const attestationAsn1 = forge.asn1.fromDer(innerBytes);
+        // 🔥 SAFE EXTRACTION (NO CRASH VERSION)
 
-// 🔹 Access sequence
-const seq = attestationAsn1.value;
+        // Step 1: Convert binary safely
+        const extBuffer = Buffer.from(ext.value, "binary");
 
-// 🔥 Challenge is index 4
-const challengeNode = seq[4];
-const challengeBytes = challengeNode.value;
+        // Step 2: Remove ASN.1 OCTET STRING header manually
+        // First byte = 0x04 (OCTET STRING)
+        // Second byte = length (may be multi-byte)
 
-const extractedNonce = Buffer.from(challengeBytes, "binary").toString("base64");
+        let offset = 2;
 
-console.log("Server nonce:", nonce);
-console.log("Extracted nonce:", extractedNonce);
+        // Handle long-form length
+        if (extBuffer[1] & 0x80) {
+            const lengthBytes = extBuffer[1] & 0x7F;
+            offset = 2 + lengthBytes;
+        }
 
-// Compare
-if (extractedNonce !== nonce) {
-    return res.status(400).json({
-        success: false,
-        error: "Nonce mismatch ❌"
-    });
-}
+        const innerDer = extBuffer.slice(offset);
+
+        // Step 3: Parse inner ASN.1 safely
+        let attestationAsn1;
+        try {
+            attestationAsn1 = forge.asn1.fromDer(innerDer.toString("binary"));
+        } catch (e) {
+            return res.status(400).json({
+                success: false,
+                error: "ASN.1 parsing failed (device may not support full attestation)"
+            });
+        }
+
+        const seq = attestationAsn1.value;
+
+        if (!seq || seq.length < 5) {
+            return res.status(400).json({
+                success: false,
+                error: "Invalid attestation structure"
+            });
+        }
+
+        // 🔥 Extract challenge
+        const challengeNode = seq[4];
+
+        let extractedNonce = "";
+
+        try {
+            extractedNonce = Buffer.from(
+                challengeNode.value,
+                "binary"
+            ).toString("base64");
+        } catch (e) {
+            return res.status(400).json({
+                success: false,
+                error: "Failed to extract nonce"
+            });
+        }
+
+        console.log("🔹 Server nonce:", nonce);
+        console.log("🔹 Extracted nonce:", extractedNonce);
+
+        // 🔥 Compare nonce
+        if (extractedNonce !== nonce) {
+            return res.status(400).json({
+                success: false,
+                error: "Nonce mismatch ❌"
+            });
+        }
 
         // Remove nonce after use
         nonceStore.delete(nonce);
 
-        res.json({
+        return res.json({
             success: true,
-            message: "✅ Attestation VERIFIED (nonce match)",
-            details: {
-                nonceMatch: true
-            }
+            message: "✅ Attestation VERIFIED (nonce match)"
         });
 
     } catch (err) {
         console.error("Verification error:", err);
-        res.status(500).json({
+
+        return res.status(500).json({
             success: false,
             error: "Verification failed"
         });
     }
 });
 
+// Start server
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
