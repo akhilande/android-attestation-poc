@@ -27,6 +27,7 @@ app.post("/verify-attestation", (req, res) => {
     try {
         const { nonce, certificateChain } = req.body;
 
+        // 🔹 Step 1: Validate input
         if (!nonce || !certificateChain) {
             return res.status(400).json({
                 success: false,
@@ -41,14 +42,19 @@ app.post("/verify-attestation", (req, res) => {
             });
         }
 
-        // 🔹 Decode leaf certificate
+        console.log("==================================");
+        console.log("📥 Incoming Request");
+        console.log("Nonce from client:", nonce);
+        console.log("Cert chain length:", certificateChain.length);
+
+        // 🔹 Step 2: Decode cert
         const leafCertBase64 = certificateChain[0];
         const leafDer = Buffer.from(leafCertBase64, "base64");
 
         const certAsn1 = forge.asn1.fromDer(leafDer.toString("binary"));
         const cert = forge.pki.certificateFromAsn1(certAsn1);
 
-        // 🔹 Find attestation extension
+        // 🔹 Step 3: Find extension
         const ext = cert.extensions.find(e =>
             e.id === "1.3.6.1.4.1.11129.2.1.17"
         );
@@ -60,18 +66,10 @@ app.post("/verify-attestation", (req, res) => {
             });
         }
 
-        // 🔥 SAFE EXTRACTION (NO CRASH VERSION)
-
-        // Step 1: Convert binary safely
+        // 🔹 Step 4: Safe ASN.1 unwrap
         const extBuffer = Buffer.from(ext.value, "binary");
 
-        // Step 2: Remove ASN.1 OCTET STRING header manually
-        // First byte = 0x04 (OCTET STRING)
-        // Second byte = length (may be multi-byte)
-
         let offset = 2;
-
-        // Handle long-form length
         if (extBuffer[1] & 0x80) {
             const lengthBytes = extBuffer[1] & 0x7F;
             offset = 2 + lengthBytes;
@@ -79,60 +77,42 @@ app.post("/verify-attestation", (req, res) => {
 
         const innerDer = extBuffer.slice(offset);
 
-        // Step 3: Parse inner ASN.1 safely
-        let attestationAsn1;
-        try {
-            attestationAsn1 = forge.asn1.fromDer(innerDer.toString("binary"));
-        } catch (e) {
-            return res.status(400).json({
-                success: false,
-                error: "ASN.1 parsing failed (device may not support full attestation)"
-            });
-        }
-
+        const attestationAsn1 = forge.asn1.fromDer(innerDer.toString("binary"));
         const seq = attestationAsn1.value;
 
-        if (!seq || seq.length < 5) {
-            return res.status(400).json({
-                success: false,
-                error: "Invalid attestation structure"
-            });
-        }
-
-        // 🔥 Extract challenge
         const challengeNode = seq[4];
 
-        let extractedNonce = "";
+        const extractedNonce = Buffer.from(
+            challengeNode.value,
+            "binary"
+        ).toString("base64");
 
-        try {
-            extractedNonce = Buffer.from(
-                challengeNode.value,
-                "binary"
-            ).toString("base64");
-        } catch (e) {
-            return res.status(400).json({
-                success: false,
-                error: "Failed to extract nonce"
-            });
-        }
-
-        console.log("🔹 Server nonce:", nonce);
         console.log("🔹 Extracted nonce:", extractedNonce);
+        console.log("🔹 Server nonce   :", nonce);
 
-        // 🔥 Compare nonce
-        if (extractedNonce !== nonce) {
+        // 🔹 Step 5: Compare (safe normalize)
+        const normalize = (s) => s.replace(/=+$/, "").trim();
+
+        if (normalize(extractedNonce) !== normalize(nonce)) {
+            console.log("❌ NONCE MISMATCH");
+
             return res.status(400).json({
                 success: false,
-                error: "Nonce mismatch ❌"
+                error: "Nonce mismatch",
+                debug: {
+                    serverNonce: nonce,
+                    extractedNonce: extractedNonce
+                }
             });
         }
 
-        // Remove nonce after use
+        console.log("✅ NONCE MATCH SUCCESS");
+
         nonceStore.delete(nonce);
 
         return res.json({
             success: true,
-            message: "✅ Attestation VERIFIED (nonce match)"
+            message: "✅ Attestation VERIFIED"
         });
 
     } catch (err) {
