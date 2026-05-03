@@ -61,29 +61,31 @@ app.post("/verify-attestation", (req, res) => {
         }
 
         // 🔹 Parse extension ASN.1
-        const extAsn1 = forge.asn1.fromDer(ext.value);
+       // 🔹 Parse extension correctly
+const extDer = forge.util.createBuffer(ext.value, "binary");
+const outerAsn1 = forge.asn1.fromDer(extDer);
+const innerBytes = outerAsn1.value;
+const attestationAsn1 = forge.asn1.fromDer(innerBytes);
 
-        // Structure: SEQUENCE → elements
-        const attestationSeq = extAsn1.value;
+// 🔹 Access sequence
+const seq = attestationAsn1.value;
 
-        // 🔥 attestationChallenge is at index 4
-        const challengeNode = attestationSeq[4];
+// 🔥 Challenge is index 4
+const challengeNode = seq[4];
+const challengeBytes = challengeNode.value;
 
-        const challengeBytes = challengeNode.value;
+const extractedNonce = Buffer.from(challengeBytes, "binary").toString("base64");
 
-        // Convert to Base64 (same format as server nonce)
-        const extractedNonce = Buffer.from(challengeBytes, "binary").toString("base64");
+console.log("Server nonce:", nonce);
+console.log("Extracted nonce:", extractedNonce);
 
-        console.log("🔹 Server nonce:", nonce);
-        console.log("🔹 Extracted nonce:", extractedNonce);
-
-        // 🔥 Compare
-        if (extractedNonce !== nonce) {
-            return res.status(400).json({
-                success: false,
-                error: "Nonce mismatch ❌"
-            });
-        }
+// Compare
+if (extractedNonce !== nonce) {
+    return res.status(400).json({
+        success: false,
+        error: "Nonce mismatch ❌"
+    });
+}
 
         // Remove nonce after use
         nonceStore.delete(nonce);
