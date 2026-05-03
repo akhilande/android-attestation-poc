@@ -41,15 +41,14 @@ app.post("/verify-attestation", (req, res) => {
             });
         }
 
-        // 🔹 STEP 1: Decode leaf certificate
+        // 🔹 Decode leaf certificate
         const leafCertBase64 = certificateChain[0];
         const leafDer = Buffer.from(leafCertBase64, "base64");
 
-        const cert = forge.pki.certificateFromAsn1(
-            forge.asn1.fromDer(leafDer.toString("binary"))
-        );
+        const certAsn1 = forge.asn1.fromDer(leafDer.toString("binary"));
+        const cert = forge.pki.certificateFromAsn1(certAsn1);
 
-        // 🔹 STEP 2: Find attestation extension
+        // 🔹 Find attestation extension
         const ext = cert.extensions.find(e =>
             e.id === "1.3.6.1.4.1.11129.2.1.17"
         );
@@ -61,28 +60,44 @@ app.post("/verify-attestation", (req, res) => {
             });
         }
 
-        // 🔹 STEP 3: Extract raw extension value
-        const extBytes = Buffer.from(ext.value, "binary");
+        // 🔹 Parse extension ASN.1
+        const extAsn1 = forge.asn1.fromDer(ext.value);
 
-        // ⚠️ Simplified extraction (PoC level)
-        // Real parsing = ASN.1 decode deeply
-        const nonceBase64 = nonce;
+        // Structure: SEQUENCE → elements
+        const attestationSeq = extAsn1.value;
 
-        // 🔹 STEP 4: Compare (placeholder)
-        // In real step we decode ASN.1 and extract actual nonce
+        // 🔥 attestationChallenge is at index 4
+        const challengeNode = attestationSeq[4];
 
-        console.log("Received nonce:", nonceBase64);
+        const challengeBytes = challengeNode.value;
+
+        // Convert to Base64 (same format as server nonce)
+        const extractedNonce = Buffer.from(challengeBytes, "binary").toString("base64");
+
+        console.log("🔹 Server nonce:", nonce);
+        console.log("🔹 Extracted nonce:", extractedNonce);
+
+        // 🔥 Compare
+        if (extractedNonce !== nonce) {
+            return res.status(400).json({
+                success: false,
+                error: "Nonce mismatch ❌"
+            });
+        }
 
         // Remove nonce after use
         nonceStore.delete(nonce);
 
         res.json({
             success: true,
-            message: "PoC: Certificate parsed (nonce extraction next step)"
+            message: "✅ Attestation VERIFIED (nonce match)",
+            details: {
+                nonceMatch: true
+            }
         });
 
     } catch (err) {
-        console.error(err);
+        console.error("Verification error:", err);
         res.status(500).json({
             success: false,
             error: "Verification failed"
