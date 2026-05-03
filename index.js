@@ -1,21 +1,34 @@
 const express = require("express");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Health check
+// In-memory store (PoC only)
+const nonceStore = new Map();
+
+// Health
 app.get("/", (req, res) => {
-    res.send("✅ Android Attestation PoC Backend Running");
+    res.send("✅ Backend Running");
 });
 
-// Attestation API
+// 🔐 Generate Nonce
+app.get("/generate-nonce", (req, res) => {
+    const nonce = crypto.randomBytes(16).toString("base64");
+
+    // Store nonce (PoC: no expiry yet)
+    nonceStore.set(nonce, true);
+
+    res.json({ nonce });
+});
+
+// 🔍 Verify Attestation
 app.post("/verify-attestation", (req, res) => {
     try {
         const { nonce, certificateChain } = req.body;
 
-        // Basic validation
         if (!nonce || !certificateChain) {
             return res.status(400).json({
                 success: false,
@@ -23,40 +36,30 @@ app.post("/verify-attestation", (req, res) => {
             });
         }
 
-        if (!Array.isArray(certificateChain) || certificateChain.length === 0) {
+        // Check nonce exists
+        if (!nonceStore.has(nonce)) {
             return res.status(400).json({
                 success: false,
-                error: "certificateChain must be a non-empty array"
+                error: "Invalid or unknown nonce"
             });
         }
 
-        console.log("✅ Received Attestation Request");
-        console.log("Nonce:", nonce);
-        console.log("Certificates:", certificateChain.length);
+        // (Later we will extract nonce from cert and compare)
+        console.log("✅ Nonce verified from request");
 
-        // Placeholder validation result
-        const result = {
+        // Remove nonce after use (important)
+        nonceStore.delete(nonce);
+
+        res.json({
             success: true,
-            message: "Attestation request received",
-            details: {
-                nonceReceived: nonce,
-                certCount: certificateChain.length
-            }
-        };
-
-        res.json(result);
-
-    } catch (error) {
-        console.error("❌ Error:", error);
-
-        res.status(500).json({
-            success: false,
-            error: "Internal server error"
+            message: "Nonce accepted (PoC stage)"
         });
+
+    } catch (err) {
+        res.status(500).json({ success: false, error: "Server error" });
     }
 });
 
-// Start server
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
