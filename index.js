@@ -1,12 +1,13 @@
 const express = require("express");
 const crypto = require("crypto");
+const forge = require("node-forge");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// In-memory store (PoC only)
+// In-memory nonce store
 const nonceStore = new Map();
 
 // Health
@@ -14,17 +15,14 @@ app.get("/", (req, res) => {
     res.send("✅ Backend Running");
 });
 
-// 🔐 Generate Nonce
+// Generate nonce
 app.get("/generate-nonce", (req, res) => {
     const nonce = crypto.randomBytes(16).toString("base64");
-
-    // Store nonce (PoC: no expiry yet)
     nonceStore.set(nonce, true);
-
     res.json({ nonce });
 });
 
-// 🔍 Verify Attestation
+// Verify attestation
 app.post("/verify-attestation", (req, res) => {
     try {
         const { nonce, certificateChain } = req.body;
@@ -32,31 +30,63 @@ app.post("/verify-attestation", (req, res) => {
         if (!nonce || !certificateChain) {
             return res.status(400).json({
                 success: false,
-                error: "Missing nonce or certificateChain"
+                error: "Missing fields"
             });
         }
 
-        // Check nonce exists
         if (!nonceStore.has(nonce)) {
             return res.status(400).json({
                 success: false,
-                error: "Invalid or unknown nonce"
+                error: "Invalid nonce"
             });
         }
 
-        // (Later we will extract nonce from cert and compare)
-        console.log("✅ Nonce verified from request");
+        // 🔹 STEP 1: Decode leaf certificate
+        const leafCertBase64 = certificateChain[0];
+        const leafDer = Buffer.from(leafCertBase64, "base64");
 
-        // Remove nonce after use (important)
+        const cert = forge.pki.certificateFromAsn1(
+            forge.asn1.fromDer(leafDer.toString("binary"))
+        );
+
+        // 🔹 STEP 2: Find attestation extension
+        const ext = cert.extensions.find(e =>
+            e.id === "1.3.6.1.4.1.11129.2.1.17"
+        );
+
+        if (!ext) {
+            return res.status(400).json({
+                success: false,
+                error: "Attestation extension not found"
+            });
+        }
+
+        // 🔹 STEP 3: Extract raw extension value
+        const extBytes = Buffer.from(ext.value, "binary");
+
+        // ⚠️ Simplified extraction (PoC level)
+        // Real parsing = ASN.1 decode deeply
+        const nonceBase64 = nonce;
+
+        // 🔹 STEP 4: Compare (placeholder)
+        // In real step we decode ASN.1 and extract actual nonce
+
+        console.log("Received nonce:", nonceBase64);
+
+        // Remove nonce after use
         nonceStore.delete(nonce);
 
         res.json({
             success: true,
-            message: "Nonce accepted (PoC stage)"
+            message: "PoC: Certificate parsed (nonce extraction next step)"
         });
 
     } catch (err) {
-        res.status(500).json({ success: false, error: "Server error" });
+        console.error(err);
+        res.status(500).json({
+            success: false,
+            error: "Verification failed"
+        });
     }
 });
 
